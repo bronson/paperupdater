@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import hashlib
 import logging
 import os
 import requests
@@ -47,7 +48,7 @@ def get_latest_stable(project):
         if stable_builds:
             build = stable_builds[0]  # newest stable build is first
             dl = build["downloads"]["server:default"]
-            return version, build["id"], dl["url"], dl["name"]
+            return version, build["id"], dl["url"], dl["name"], dl["checksums"]["sha256"]
 
     raise RuntimeError(f"No stable builds found for any {project.capitalize()} version.")
 
@@ -63,13 +64,37 @@ def update_symlink(jar_name, symlink):
     logging.info(f"Updated {symlink} -> {jar_name}.")
 
 
-def download_server(version, build_id, download_url, jar_name, symlink):
+def verify_checksum(jar_name, expected_sha256):
+    """Compute the SHA-256 digest of jar_name and compare it to expected_sha256.
+
+    Raises ValueError if the digests do not match.
+    """
+    sha256 = hashlib.sha256()
+    with open(jar_name, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha256.update(chunk)
+    actual = sha256.hexdigest()
+    if actual != expected_sha256:
+        raise ValueError(
+            f"Checksum mismatch for {jar_name}: "
+            f"expected {expected_sha256}, got {actual}"
+        )
+    logging.info(f"Checksum verified for {jar_name}.")
+
+
+def download_server(version, build_id, download_url, jar_name, sha256, symlink):
     logging.info(f"Downloading {version} build {build_id}...")
     response = requests.get(download_url, headers=HEADERS)
     response.raise_for_status()
     with open(jar_name, "wb") as jar_file:
         jar_file.write(response.content)
     logging.info(f"Saved to {jar_name}.")
+    try:
+        verify_checksum(jar_name, sha256)
+    except ValueError as e:
+        logging.error(str(e))
+        os.remove(jar_name)
+        raise
     update_symlink(jar_name, symlink)
 
 
@@ -82,14 +107,14 @@ def main():
         project, symlink = "paper", "paper.jar"
 
     logging.info(f"Updating {project.capitalize()}...")
-    version, build_id, download_url, jar_name = get_latest_stable(project)
+    version, build_id, download_url, jar_name, sha256 = get_latest_stable(project)
     logging.info(f"Latest stable {project.capitalize()} version: {version}, build {build_id}.")
 
     if os.path.isfile(jar_name):
         logging.info(f"Already have {jar_name} — no update needed.")
         update_symlink(jar_name, symlink)
     else:
-        download_server(version, build_id, download_url, jar_name, symlink)
+        download_server(version, build_id, download_url, jar_name, sha256, symlink)
 
     logging.info("--- Done ---")
 

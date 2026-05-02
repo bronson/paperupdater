@@ -1,12 +1,22 @@
+#!/usr/bin/env python3
+
 """Tests for update.py
 
 Run with:  pytest test_update.py
+       or:  ./test_update.py
 """
 
+import hashlib
 import os
+
+import pytest
 from unittest.mock import MagicMock, patch
 
-from update import download_server, get_latest_stable, update_symlink
+from update import download_server, get_latest_stable, update_symlink, verify_checksum
+
+
+FAKE_JAR_BYTES = b"fake-jar-bytes"
+FAKE_SHA256 = hashlib.sha256(FAKE_JAR_BYTES).hexdigest()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -32,13 +42,14 @@ def fake_api_responses(project, version, build_id):
                 "server:default": {
                     "url": f"https://example.com/{jar_name}",
                     "name": jar_name,
+                    "checksums": {"sha256": FAKE_SHA256},
                 }
             },
         }
     ]
 
     download_resp = MagicMock()
-    download_resp.content = b"fake-jar-bytes"
+    download_resp.content = FAKE_JAR_BYTES
 
     return [versions_resp, builds_resp, download_resp], jar_name
 
@@ -89,11 +100,11 @@ def test_paper_is_downloaded_and_symlinked(tmp_path, monkeypatch):
     responses, jar_name = fake_api_responses("paper", "1.21.4", 53)
 
     with patch("update.requests.get", side_effect=responses):
-        version, build_id, url, name = get_latest_stable("paper")
-        download_server(version, build_id, url, name, "paper.jar")
+        version, build_id, url, name, sha256 = get_latest_stable("paper")
+        download_server(version, build_id, url, name, sha256, "paper.jar")
 
     assert os.path.isfile(jar_name), "jar file should exist on disk"
-    assert open(jar_name, "rb").read() == b"fake-jar-bytes"
+    assert open(jar_name, "rb").read() == FAKE_JAR_BYTES
     assert os.path.islink("paper.jar"), "paper.jar should be a symlink"
     assert os.readlink("paper.jar") == jar_name
 
@@ -103,10 +114,46 @@ def test_velocity_is_downloaded_and_symlinked(tmp_path, monkeypatch):
     responses, jar_name = fake_api_responses("velocity", "3.5.0-SNAPSHOT", 594)
 
     with patch("update.requests.get", side_effect=responses):
-        version, build_id, url, name = get_latest_stable("velocity")
-        download_server(version, build_id, url, name, "velocity.jar")
+        version, build_id, url, name, sha256 = get_latest_stable("velocity")
+        download_server(version, build_id, url, name, sha256, "velocity.jar")
 
     assert os.path.isfile(jar_name), "jar file should exist on disk"
-    assert open(jar_name, "rb").read() == b"fake-jar-bytes"
+    assert open(jar_name, "rb").read() == FAKE_JAR_BYTES
     assert os.path.islink("velocity.jar"), "velocity.jar should be a symlink"
     assert os.readlink("velocity.jar") == jar_name
+
+
+# ── checksum verification ─────────────────────────────────────────────────────
+
+
+def test_verify_checksum_passes_for_correct_hash(tmp_path):
+    jar = tmp_path / "paper-1.21.4-53.jar"
+    jar.write_bytes(FAKE_JAR_BYTES)
+    verify_checksum(str(jar), FAKE_SHA256)  # should not raise
+
+
+def test_verify_checksum_raises_for_wrong_hash(tmp_path):
+    jar = tmp_path / "paper-1.21.4-53.jar"
+    jar.write_bytes(FAKE_JAR_BYTES)
+    bad_sha256 = "0" * 64
+    with pytest.raises(ValueError, match="Checksum mismatch"):
+        verify_checksum(str(jar), bad_sha256)
+
+
+def test_bad_checksum_deletes_jar_and_skips_symlink(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    responses, jar_name = fake_api_responses("paper", "1.21.4", 53)
+    bad_sha256 = "0" * 64
+
+    with patch("update.requests.get", side_effect=responses):
+        version, build_id, url, name, _ = get_latest_stable("paper")
+        with pytest.raises(ValueError, match="Checksum mismatch"):
+            download_server(version, build_id, url, name, bad_sha256, "paper.jar")
+
+    assert not os.path.isfile(jar_name), "corrupted jar should be deleted"
+    assert not os.path.islink("paper.jar"), "symlink should not be created"
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(pytest.main([__file__, "-v"]))
