@@ -58,6 +58,9 @@ def update_symlink(jar_name, symlink):
     if os.path.islink(symlink) and os.readlink(symlink) == jar_name:
         logging.info(f"{symlink} already points to {jar_name}.")
         return
+    if os.path.lexists(symlink) and os.lstat(symlink).st_mtime > os.path.getmtime(jar_name):
+        logging.info(f"{symlink} appears to have been manually changed — leaving it alone.")
+        return
     if os.path.lexists(symlink):
         os.remove(symlink)
     os.symlink(jar_name, symlink)

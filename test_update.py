@@ -75,10 +75,29 @@ def test_symlink_is_updated_to_new_version(tmp_path):
     open(old_jar, "w").close()
     open(new_jar, "w").close()
     os.symlink(old_jar, link)
+    # Make new_jar appear newer than the symlink, as it would be after a real download.
+    t = os.lstat(link).st_mtime + 1
+    os.utime(new_jar, (t, t))
 
     update_symlink(new_jar, link)
 
     assert os.readlink(link) == new_jar
+
+
+def test_symlink_is_left_alone_when_manually_changed(tmp_path):
+    old_jar = str(tmp_path / "paper-1.21.3-52.jar")
+    new_jar = str(tmp_path / "paper-1.21.4-53.jar")
+    link = str(tmp_path / "paper.jar")
+    open(old_jar, "w").close()
+    open(new_jar, "w").close()
+    os.symlink(old_jar, link)
+    # Simulate the user re-pointing the symlink after new_jar was downloaded.
+    t = os.path.getmtime(new_jar) + 1
+    os.utime(link, (t, t), follow_symlinks=False)
+
+    update_symlink(new_jar, link)
+
+    assert os.readlink(link) == old_jar  # user's choice preserved
 
 
 def test_symlink_unchanged_when_already_current(tmp_path):

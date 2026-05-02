@@ -21,3 +21,7 @@ TODO
 TODO: talk about how symlinks work
 
 Logs are written to `paper_updater.log`, in the same directory as the update script is run.
+
+## TODO
+
+- keep a configurable number of versions, remove others.
