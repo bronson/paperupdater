@@ -52,6 +52,19 @@ def get_latest_stable():
     raise RuntimeError("No stable builds found for any Paper version.")
 
 
+def update_symlink(jar_name):
+    """Point paper.jar at jar_name, replacing any existing symlink."""
+    symlink = "paper.jar"
+    if os.path.islink(symlink):
+        current = os.readlink(symlink)
+        if current == jar_name:
+            logging.info(f"{symlink} already points to {jar_name}.")
+            return
+        os.remove(symlink)
+    os.symlink(jar_name, symlink)
+    logging.info(f"Updated {symlink} -> {jar_name}.")
+
+
 def download_server(version, build_id, download_url, jar_name):
     logging.info(f"Downloading Paper {version} build {build_id}...")
     response = requests.get(download_url, headers=HEADERS)
@@ -59,6 +72,7 @@ def download_server(version, build_id, download_url, jar_name):
     with open(jar_name, "wb") as jar_file:
         jar_file.write(response.content)
     logging.info(f"Saved to {jar_name}.")
+    update_symlink(jar_name)
 
 
 def main():
@@ -68,7 +82,8 @@ def main():
     logging.info(f"Latest stable Paper version: {version}, build {build_id}.")
 
     if os.path.isfile(jar_name):
-        logging.info(f"Already have {jar_name} — no update needed.")
+        logging.info(f"Already have {jar_name}, no update needed.")
+        update_symlink(jar_name)
     else:
         download_server(version, build_id, download_url, jar_name)
 
