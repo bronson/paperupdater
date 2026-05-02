@@ -1,3 +1,4 @@
 paper_updater.log
 paper*.jar
 velocity*.jar
+__pycache__
