@@ -23,13 +23,13 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-def get_latest_stable():
-    """Find the latest Paper version that has a stable build.
+def get_latest_stable(project):
+    """Find the latest stable build for the given PaperMC project.
 
     Returns a tuple of (version, build_id, download_url, jar_name).
     """
-    logging.info("Fetching Paper version list...")
-    response = requests.get(f"{PAPER_API_BASE}/projects/paper", headers=HEADERS)
+    logging.info(f"Fetching {project.capitalize()} version list...")
+    response = requests.get(f"{PAPER_API_BASE}/projects/{project}", headers=HEADERS)
     response.raise_for_status()
 
     # .versions is a dict of version groups (e.g. {"1.21": ["1.21.4", "1.21.3", ...], ...}),
@@ -39,7 +39,7 @@ def get_latest_stable():
 
     for version in all_versions:
         logging.info(f"Checking {version} for stable builds...")
-        builds_resp = requests.get(f"{PAPER_API_BASE}/projects/paper/versions/{version}/builds", headers=HEADERS)
+        builds_resp = requests.get(f"{PAPER_API_BASE}/projects/{project}/versions/{version}/builds", headers=HEADERS)
         builds_resp.raise_for_status()
         builds = builds_resp.json()
 
@@ -49,43 +49,47 @@ def get_latest_stable():
             dl = build["downloads"]["server:default"]
             return version, build["id"], dl["url"], dl["name"]
 
-    raise RuntimeError("No stable builds found for any Paper version.")
+    raise RuntimeError(f"No stable builds found for any {project.capitalize()} version.")
 
 
-def update_symlink(jar_name):
-    """Point paper.jar at jar_name, replacing any existing symlink."""
-    symlink = "paper.jar"
-    if os.path.islink(symlink):
-        current = os.readlink(symlink)
-        if current == jar_name:
-            logging.info(f"{symlink} already points to {jar_name}.")
-            return
+def update_symlink(jar_name, symlink):
+    """Point symlink at jar_name, replacing whatever currently exists there."""
+    if os.path.islink(symlink) and os.readlink(symlink) == jar_name:
+        logging.info(f"{symlink} already points to {jar_name}.")
+        return
+    if os.path.lexists(symlink):
         os.remove(symlink)
     os.symlink(jar_name, symlink)
     logging.info(f"Updated {symlink} -> {jar_name}.")
 
 
-def download_server(version, build_id, download_url, jar_name):
-    logging.info(f"Downloading Paper {version} build {build_id}...")
+def download_server(version, build_id, download_url, jar_name, symlink):
+    logging.info(f"Downloading {version} build {build_id}...")
     response = requests.get(download_url, headers=HEADERS)
     response.raise_for_status()
     with open(jar_name, "wb") as jar_file:
         jar_file.write(response.content)
     logging.info(f"Saved to {jar_name}.")
-    update_symlink(jar_name)
+    update_symlink(jar_name, symlink)
 
 
 def main():
     logging.info("--- Starting update run ---")
 
-    version, build_id, download_url, jar_name = get_latest_stable()
-    logging.info(f"Latest stable Paper version: {version}, build {build_id}.")
+    if os.path.lexists("velocity.jar"):
+        project, symlink = "velocity", "velocity.jar"
+    else:
+        project, symlink = "paper", "paper.jar"
+
+    logging.info(f"Updating {project.capitalize()}...")
+    version, build_id, download_url, jar_name = get_latest_stable(project)
+    logging.info(f"Latest stable {project.capitalize()} version: {version}, build {build_id}.")
 
     if os.path.isfile(jar_name):
-        logging.info(f"Already have {jar_name}, no update needed.")
-        update_symlink(jar_name)
+        logging.info(f"Already have {jar_name} — no update needed.")
+        update_symlink(jar_name, symlink)
     else:
-        download_server(version, build_id, download_url, jar_name)
+        download_server(version, build_id, download_url, jar_name, symlink)
 
     logging.info("--- Done ---")
 
