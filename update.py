@@ -11,18 +11,20 @@ HEADERS = {"User-Agent": USER_AGENT}
 LOG_FILENAME = "paper_updater.log"
 LOG_FORMAT = "%(asctime)s %(message)s"
 
-# Log to both the log file and the screen
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter(LOG_FORMAT)
 
-file_handler = logging.FileHandler(LOG_FILENAME)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+def setup_logging():
+    """Configure logging to both the log file and the screen."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(LOG_FORMAT)
 
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+    file_handler = logging.FileHandler(LOG_FILENAME)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 def get_latest_stable(project):
     """Find the latest stable build for the given PaperMC project.
@@ -102,6 +104,7 @@ def download_server(version, build_id, download_url, jar_name, sha256, symlink):
 
 
 def main():
+    setup_logging()
     logging.info("--- Starting update run ---")
 
     if os.path.lexists("velocity.jar"):
