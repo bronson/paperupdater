@@ -2,6 +2,7 @@
 import hashlib
 import logging
 import os
+import time
 import requests
 
 # Paper API configuration
@@ -10,6 +11,35 @@ USER_AGENT = "PaperUpdater/1.0 (https://github.com/bronson/paperupdater)"
 HEADERS = {"User-Agent": USER_AGENT}
 LOG_FILENAME = "paper_updater.log"
 LOG_FORMAT = "%(asctime)s %(message)s"
+
+
+def _human_size(bytes_count):
+    """Return a human-readable byte count with appropriate unit."""
+    if bytes_count >= 1_000_000:
+        return f"{bytes_count / 1_000_000:.1f} MB"
+    return f"{bytes_count / 1_000:.1f} kB"
+
+
+def _human_rate(bytes_count, elapsed):
+    """Return a human-readable transfer rate."""
+    if elapsed <= 0:
+        return "∞"
+    rate = bytes_count / elapsed
+    if rate >= 1_000_000:
+        return f"{rate / 1_000_000:.1f} MB/sec"
+    return f"{rate / 1_000:.1f} kB/sec"
+
+
+def fetch(url):
+    """Fetch a URL, logging the request, size, duration, and rate."""
+    logging.info(f"Fetching {url}")
+    start = time.monotonic()
+    response = requests.get(url, headers=HEADERS)
+    elapsed = time.monotonic() - start
+    response.raise_for_status()
+    size = len(response.content)
+    logging.info(f"Received {_human_size(size)} in {elapsed:.2f}s ({_human_rate(size, elapsed)})")
+    return response
 
 
 def setup_logging():
@@ -31,9 +61,7 @@ def get_latest_stable(project):
 
     Returns a tuple of (version, build_id, download_url, jar_name).
     """
-    logging.info(f"Fetching {project.capitalize()} version list...")
-    response = requests.get(f"{PAPER_API_BASE}/projects/{project}", headers=HEADERS)
-    response.raise_for_status()
+    response = fetch(f"{PAPER_API_BASE}/projects/{project}")
 
     # .versions is a dict of version groups (e.g. {"1.21": ["1.21.4", "1.21.3", ...], ...}),
     # ordered newest-first. Flatten into a single list to iterate through.
@@ -41,9 +69,7 @@ def get_latest_stable(project):
     all_versions = [v for group in version_groups.values() for v in group]
 
     for version in all_versions:
-        logging.info(f"Checking {version} for stable builds...")
-        builds_resp = requests.get(f"{PAPER_API_BASE}/projects/{project}/versions/{version}/builds", headers=HEADERS)
-        builds_resp.raise_for_status()
+        builds_resp = fetch(f"{PAPER_API_BASE}/projects/{project}/versions/{version}/builds")
         builds = builds_resp.json()
 
         stable_builds = [b for b in builds if b.get("channel") == "STABLE"]
@@ -88,9 +114,7 @@ def verify_checksum(jar_name, expected_sha256):
 
 
 def download_server(version, build_id, download_url, jar_name, sha256, symlink):
-    logging.info(f"Downloading {version} build {build_id}...")
-    response = requests.get(download_url, headers=HEADERS)
-    response.raise_for_status()
+    response = fetch(download_url)
     with open(jar_name, "wb") as jar_file:
         jar_file.write(response.content)
     logging.info(f"Saved to {jar_name}.")
