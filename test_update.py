@@ -17,9 +17,11 @@ from update import (
     download_file,
     fetch_papermc,
     load_config,
+    prune_old_downloads,
     resolve_asset,
     update_symlink,
     verify_checksum,
+    version_glob,
 )
 
 
@@ -212,7 +214,7 @@ def test_download_file_saves_and_verifies(tmp_path, monkeypatch):
     url = f"https://example.com/{jar_name}"
 
     with patch("update.requests.get", side_effect=_fake_download_response()):
-        download_file(AssetInfo(jar_name, url, FAKE_SHA256))
+        download_file(AssetInfo(jar_name, url, FAKE_SHA256, "paper"))
 
     assert os.path.isfile(f"downloads/{jar_name}")
     assert open(f"downloads/{jar_name}", "rb").read() == FAKE_JAR_BYTES
@@ -228,7 +230,7 @@ def test_download_file_skips_if_already_present(tmp_path, monkeypatch):
 
     # Should not fetch anything
     with patch("update.requests.get") as mock_get:
-        download_file(AssetInfo(jar_name, "https://example.com/irrelevant", FAKE_SHA256))
+        download_file(AssetInfo(jar_name, "https://example.com/irrelevant", FAKE_SHA256, "paper"))
         mock_get.assert_not_called()
 
 
@@ -240,7 +242,7 @@ def test_download_file_deletes_on_checksum_mismatch(tmp_path, monkeypatch):
 
     with patch("update.requests.get", side_effect=_fake_download_response()):
         with pytest.raises(ValueError, match="Checksum mismatch"):
-            download_file(AssetInfo(jar_name, url, bad_sha256))
+            download_file(AssetInfo(jar_name, url, bad_sha256, "paper"))
 
     assert not os.path.isfile(f"downloads/{jar_name}")
 
@@ -290,6 +292,118 @@ def test_download_file_warns_when_checksum_optional_and_missing(tmp_path, monkey
 
     assert os.path.isfile(f"downloads/{jar_name}")
     assert any("not verified" in r.message for r in caplog.records)
+
+
+# ── version_glob ─────────────────────────────────────────────────────────────
+
+
+def test_version_glob_strips_version():
+    assert version_glob("paper-1.21.4-53.jar", "1.21.4-53") == "paper-*.jar"
+
+
+def test_version_glob_multi_part():
+    assert version_glob("voicechat-bukkit-2.6.17.jar", "2.6.17") == "voicechat-bukkit-*.jar"
+
+
+def test_version_glob_returns_none_when_no_version():
+    assert version_glob("something.jar", None) is None
+
+
+def test_version_glob_returns_none_when_version_not_found():
+    assert version_glob("something.jar", "9.9.9") is None
+
+
+# ── prune_old_downloads ──────────────────────────────────────────────────────
+
+
+def _make_jar(dirpath, name, mtime_offset=0):
+    """Create an empty jar file with a specific mtime."""
+    p = dirpath / name
+    p.write_text("")
+    if mtime_offset:
+        import time
+        os.utime(str(p), (mtime_offset, mtime_offset))
+    return str(p)
+
+
+def test_prune_removes_oldest_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for i, ver in enumerate(["1.0", "2.0", "3.0", "4.0", "5.0"]):
+        _make_jar(dl, f"paper-{ver}.jar", mtime_offset=1000 + i)
+
+    prune_old_downloads("paper-*.jar", keep=3)
+
+    remaining = sorted(os.listdir(str(dl)))
+    assert remaining == ["paper-3.0.jar", "paper-4.0.jar", "paper-5.0.jar"]
+
+
+def test_prune_does_nothing_when_at_keep_limit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for i, ver in enumerate(["1.0", "2.0", "3.0"]):
+        _make_jar(dl, f"paper-{ver}.jar", mtime_offset=1000 + i)
+
+    prune_old_downloads("paper-*.jar", keep=3)
+
+    remaining = sorted(os.listdir(str(dl)))
+    assert remaining == ["paper-1.0.jar", "paper-2.0.jar", "paper-3.0.jar"]
+
+
+def test_prune_does_nothing_when_below_keep_limit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for i, ver in enumerate(["1.0", "2.0"]):
+        _make_jar(dl, f"paper-{ver}.jar", mtime_offset=1000 + i)
+
+    prune_old_downloads("paper-*.jar", keep=5)
+
+    remaining = sorted(os.listdir(str(dl)))
+    assert remaining == ["paper-1.0.jar", "paper-2.0.jar"]
+
+
+def test_prune_does_not_touch_different_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for i, ver in enumerate(["1.0", "2.0", "3.0", "4.0"]):
+        _make_jar(dl, f"paper-{ver}.jar", mtime_offset=1000 + i)
+    _make_jar(dl, "velocity-3.5.0.jar", mtime_offset=2000)
+
+    prune_old_downloads("paper-*.jar", keep=2)
+
+    remaining = sorted(os.listdir(str(dl)))
+    assert remaining == ["paper-3.0.jar", "paper-4.0.jar", "velocity-3.5.0.jar"]
+
+
+def test_prune_handles_multi_part_prefix(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for i, ver in enumerate(["2.5", "2.6", "2.7"]):
+        _make_jar(dl, f"voicechat-bukkit-{ver}.jar", mtime_offset=1000 + i)
+    _make_jar(dl, "voicechat-spigot-2.7.jar", mtime_offset=2000)
+
+    prune_old_downloads("voicechat-bukkit-*.jar", keep=1)
+
+    remaining = sorted(os.listdir(str(dl)))
+    assert remaining == ["voicechat-bukkit-2.7.jar", "voicechat-spigot-2.7.jar"]
+
+
+def test_prune_noop_when_keep_is_zero_or_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dl = tmp_path / "downloads"
+    dl.mkdir()
+    for ver in ["1.0", "2.0"]:
+        _make_jar(dl, f"paper-{ver}.jar")
+
+    prune_old_downloads("paper-*.jar", keep=0)
+    prune_old_downloads("paper-*.jar", keep=None)
+
+    assert len(os.listdir(str(dl))) == 2
 
 
 if __name__ == "__main__":

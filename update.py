@@ -2,6 +2,7 @@
 """Paper Updater — Multi-server and plugin updater for Minecraft."""
 
 import email.header
+import glob
 import hashlib
 import logging
 import os
@@ -46,7 +47,7 @@ ASSETS = {
     "discordsrv":        {"source": "github",  "project": "DiscordSRV/DiscordSRV"},
 }
 
-AssetInfo = namedtuple("AssetInfo", "filename url sha256")
+AssetInfo = namedtuple("AssetInfo", "filename url sha256 download_glob")
 Deployment = namedtuple("Deployment", "asset_name platform server_name path")
 
 
@@ -167,7 +168,8 @@ def fetch_papermc(conf):
                     f"Downgrade attack suspected: PaperMC did not provide a checksum "
                     f"for {project} v{version} build {build['id']}"
                 )
-            return AssetInfo(dl["name"], dl["url"], sha256)
+            full_version = f"{version}-{build['id']}"
+            return AssetInfo(dl["name"], dl["url"], sha256, version_glob(dl["name"], full_version))
 
     raise RuntimeError(f"No stable builds found for {project}.")
 
@@ -197,7 +199,7 @@ def fetch_hangar(conf):
                     f"Downgrade attack suspected: Hangar did not provide a checksum "
                     f"for {project} {version['name']} ({platform_name})"
                 )
-            return AssetInfo(fi["name"], dl["downloadUrl"], sha256)
+            return AssetInfo(fi["name"], dl["downloadUrl"], sha256, version_glob(fi["name"], version["name"]))
 
     # Fall back to external URL (no checksum available)
     for platform_name in platform_names:
@@ -209,7 +211,7 @@ def fetch_hangar(conf):
                 f"External download for {project} — no checksum available. "
                 f"Proceeding without verification for {filename}"
             )
-            return AssetInfo(filename, url, None)
+            return AssetInfo(filename, url, None, version_glob(filename, version["name"]))
 
     raise RuntimeError(f"No downloadable files for {project} on Hangar.")
 
@@ -226,7 +228,20 @@ def fetch_github(conf):
 
     asset = jar_assets[0]
     logging.warning(f"No checksum available for {asset['name']} (GitHub).")
-    return AssetInfo(asset["name"], asset["browser_download_url"], None)
+    tag = release.get("tag_name", "").lstrip("v")
+    return AssetInfo(asset["name"], asset["browser_download_url"], None, version_glob(asset["name"], tag))
+
+
+def version_glob(filename, version):
+    """Replace the known version in filename with '*' to create a glob pattern.
+    Returns None if version is empty or not found in filename.
+    """
+    if not version:
+        return None
+    idx = filename.find(version)
+    if idx < 0:
+        return None
+    return filename[:idx] + "*" + filename[idx + len(version):]
 
 
 FETCHERS = {
@@ -245,6 +260,23 @@ def load_config(path="update.conf"):
     with open(path) as f:
         exec(f.read(), config)  # noqa: S102
     return config
+
+
+# ── Prune ─────────────────────────────────────────────────────────────────────
+
+
+def prune_old_downloads(download_glob, keep):
+    """Remove old versions of the same artifact, keeping the newest `keep` files."""
+    if not download_glob or keep is None or keep <= 0:
+        return
+
+    pattern = os.path.join(DOWNLOADS_DIR, download_glob)
+    matches = sorted(glob.glob(pattern), key=os.path.getmtime)
+
+    while len(matches) > keep:
+        old = matches.pop(0)
+        logging.info(f"Pruning old download: {old}")
+        os.remove(old)
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -380,13 +412,15 @@ def main(config_path="update.conf"):
     for asset in unique_assets.values():
         download_file(asset)
 
-    # 6. Update symlinks
+    # 6. Update symlinks and prune old downloads
     changed_servers = set()
+    versions_to_keep = config.get("versions_to_keep", 4)
     for d in deployments:
         asset = unique_assets[(d.asset_name, d.platform)]
         asset_path = os.path.join(DOWNLOADS_DIR, asset.filename)
         if update_symlink(asset_path, d.path):
             changed_servers.add(d.server_name)
+            prune_old_downloads(asset.download_glob, versions_to_keep)
 
     # 7. Run restart hooks
     for server_name in changed_servers:
