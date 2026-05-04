@@ -437,7 +437,7 @@ def main(config_path="update.conf"):
 
 
 if __name__ == "__main__":
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "update.conf"
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "update.conf.py"
     setup_logging()
     try:
         main(config_path)

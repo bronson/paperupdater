@@ -5,23 +5,61 @@ Based on:
 * [MinecraftServerUpdater](https://github.com/eclair4151/MinecraftUpdater)
 
 This script checks to see if there are newer versions of your
-Minecraft server available. If so, it downloads them, verifies the
+Minecraft server or plugins available. If so, it downloads them, verifies the
 signatures, and updates symlinks.
+
+## Features
+
+- supports multiple servers
+  - (if you have 12 servers, the file will be downloaded once and linked 12 times)
+- verifies checksumps
+- prunes old versions of files
 
 ## Installation
 
 TODO
 
+### Config File
+
 ## Usage
 
 ```sh
-./updater.py
+./updater.py [config_file]
 ```
+
+If you don't specify a config file on the command line, the script will read from `update.conf.py`.
+
+## Download Process
 
 TODO: talk about how symlinks work
 
 Logs are written to `paper_updater.log`, in the same directory as the update script is run.
 
-## TODO
 
-- keep a configurable number of versions, remove others.
+## Config Options
+
+### versions_to_keep: Pruning Old Downloads
+
+To prevent obsolete files from building up in your Downloads directory,
+if a new version of an artifact was successfully installed, old versions
+can optionally be pruned. The versions_to_keep option specifies how many
+old versions of files you'd like to keep around (defaults to 4).
+
+```
+    versions_to_keep = 8
+```
+
+Set versions_to_keep to None to skip pruning.
+
+### restart_hook: restarts the server when new files are installed
+
+A restart hook is a shell command that can restart a particular server.
+
+Each server can have a restart_hook, and there's a global restart hook.
+If any server has received updated files, that server's restart hook
+is called. If any server's restart hook was called, the global restart
+hook will be called last.
+
+## License
+
+MIT
