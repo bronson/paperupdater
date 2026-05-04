@@ -254,11 +254,14 @@ FETCHERS = {
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
-def load_config(path="update.conf"):
+def load_config(path="update.conf.py"):
     """Load a Python config file. Returns its globals as a dict."""
     config = {}
-    with open(path) as f:
-        exec(f.read(), config)  # noqa: S102
+    try:
+        with open(path) as f:
+            exec(f.read(), config)  # noqa: S102
+    except OSError as e:
+        raise OSError(f"Can't read config file: {e}") from e
     return config
 
 
