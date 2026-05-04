@@ -79,7 +79,7 @@ def test_symlink_is_created(tmp_path):
 
     assert update_symlink(jar, link) is True
     assert os.path.islink(link)
-    assert os.readlink(link) == "paper-1.21.4-53.jar"  # relative
+    assert os.readlink(link) == jar  # absolute
 
 
 def test_symlink_is_updated_to_new_version(tmp_path):
@@ -94,7 +94,7 @@ def test_symlink_is_updated_to_new_version(tmp_path):
     os.utime(new_jar, (t, t))
 
     assert update_symlink(new_jar, link) is True
-    assert os.readlink(link) == "paper-1.21.4-53.jar"
+    assert os.readlink(link) == new_jar
 
 
 def test_symlink_is_left_alone_when_manually_changed(tmp_path):
@@ -116,10 +116,10 @@ def test_symlink_unchanged_when_already_current(tmp_path):
     jar = str(tmp_path / "paper-1.21.4-53.jar")
     link = str(tmp_path / "paper.jar")
     open(jar, "w").close()
-    os.symlink("paper-1.21.4-53.jar", link)  # relative, matching what update_symlink creates
+    os.symlink(jar, link)  # absolute, matching what update_symlink creates
 
     assert update_symlink(jar, link) is False
-    assert os.readlink(link) == "paper-1.21.4-53.jar"
+    assert os.readlink(link) == jar
 
 
 def test_symlink_replaces_regular_file(tmp_path):
@@ -132,7 +132,7 @@ def test_symlink_replaces_regular_file(tmp_path):
 
     assert update_symlink(jar, link) is True
     assert os.path.islink(link)
-    assert os.readlink(link) == "paper-1.21.4-53.jar"
+    assert os.readlink(link) == jar
 
 
 def test_symlink_creates_parent_dirs(tmp_path):
@@ -143,7 +143,7 @@ def test_symlink_creates_parent_dirs(tmp_path):
 
     assert update_symlink(jar, link) is True
     assert os.path.islink(link)
-    assert os.readlink(link) == os.path.relpath(jar, str(tmp_path / "searanch" / "plugins"))
+    assert os.readlink(link) == jar
 
 
 # ── config loading ────────────────────────────────────────────────────────────

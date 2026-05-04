@@ -330,12 +330,11 @@ def download_file(asset):
 
 
 def update_symlink(target, link_path):
-    """Point link_path at target via relative symlink. Returns True if changed."""
-    link_dir = os.path.dirname(link_path) or "."
-    rel_target = os.path.relpath(target, link_dir)
+    """Point link_path at target via absolute symlink. Returns True if changed."""
+    abs_target = os.path.abspath(target)
 
-    if os.path.islink(link_path) and os.readlink(link_path) == rel_target:
-        logging.info(f"{link_path} already points to {rel_target}.")
+    if os.path.islink(link_path) and os.readlink(link_path) == abs_target:
+        logging.info(f"{link_path} already points to {abs_target}.")
         return False
 
     if os.path.islink(link_path) and os.lstat(link_path).st_mtime > os.path.getmtime(target):
@@ -348,8 +347,8 @@ def update_symlink(target, link_path):
 
     if os.path.lexists(link_path):
         os.remove(link_path)
-    os.symlink(rel_target, link_path)
-    logging.info(f"Updated {link_path} -> {rel_target}.")
+    os.symlink(abs_target, link_path)
+    logging.info(f"Updated {link_path} -> {abs_target}.")
     return True
 
 
