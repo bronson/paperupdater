@@ -3,6 +3,7 @@
 
 import email.header
 import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -291,6 +292,51 @@ def download_file(asset):
         logging.warning(f"No checksum available for {asset.filename} — download not verified.")
 
 
+# ── Prune ────────────────────────────────────────────────────────────────────
+
+
+def prune_downloads(current_assets, keep=3):
+    """Remove old downloaded artifacts, keeping the N most recent per asset.
+
+    Tracks asset→filename history in downloads/.download_history.json.
+    On each run, updates history with current downloads and deletes files
+    that exceed the retention count.
+    """
+    metadata_path = os.path.join(DOWNLOADS_DIR, ".download_history.json")
+
+    # Load existing history
+    history = {}
+    if os.path.isfile(metadata_path):
+        with open(metadata_path) as f:
+            history = json.load(f)
+
+    # Update with current downloads (newest first)
+    for (asset_name, platform), info in current_assets.items():
+        key = f"{asset_name}/{platform}" if platform else asset_name
+        files = [f for f in history.get(key, []) if f != info.filename]
+        files.insert(0, info.filename)
+        history[key] = files
+
+    # Prune old files
+    for key, files in list(history.items()):
+        kept = []
+        for filename in files:
+            filepath = os.path.join(DOWNLOADS_DIR, filename)
+            if not os.path.isfile(filepath):
+                continue  # already deleted manually
+            if len(kept) >= keep:
+                logging.info(f"Pruning old download: {filename}")
+                os.remove(filepath)
+            else:
+                kept.append(filename)
+        history[key] = kept
+
+    # Save updated history
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    with open(metadata_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+
 # ── Symlinks ──────────────────────────────────────────────────────────────────
 
 
@@ -379,6 +425,10 @@ def main(config_path="update.conf"):
     # 5. Download
     for asset in unique_assets.values():
         download_file(asset)
+
+    # 5b. Prune old downloads
+    keep = config.get("keep_downloads", 3)
+    prune_downloads(unique_assets, keep)
 
     # 6. Update symlinks
     changed_servers = set()

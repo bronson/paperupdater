@@ -17,6 +17,7 @@ from update import (
     download_file,
     fetch_papermc,
     load_config,
+    prune_downloads,
     resolve_asset,
     update_symlink,
     verify_checksum,
@@ -290,6 +291,108 @@ def test_download_file_warns_when_checksum_optional_and_missing(tmp_path, monkey
 
     assert os.path.isfile(f"downloads/{jar_name}")
     assert any("not verified" in r.message for r in caplog.records)
+
+
+# ── prune_downloads ───────────────────────────────────────────────────────────
+
+
+def _write_jar(directory, name, content=b"fake"):
+    """Create a jar file in directory with given content."""
+    path = os.path.join(directory, name)
+    with open(path, "wb") as f:
+        f.write(content)
+    return path
+
+
+def test_prune_keeps_newest_n_per_asset(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("downloads")
+
+    # Simulate history: 4 paper jars, 3 geyser jars already downloaded
+    for name in ["paper-1.20.jar", "paper-1.21.jar", "paper-1.22.jar", "paper-1.23.jar"]:
+        _write_jar("downloads", name)
+    for name in ["geyser-1.0.jar", "geyser-2.0.jar", "geyser-3.0.jar"]:
+        _write_jar("downloads", name)
+
+    # Write a history file showing these are old downloads
+    import json
+    history = {
+        "paper": ["paper-1.23.jar", "paper-1.22.jar", "paper-1.21.jar", "paper-1.20.jar"],
+        "geyser": ["geyser-3.0.jar", "geyser-2.0.jar", "geyser-1.0.jar"],
+    }
+    with open("downloads/.download_history.json", "w") as f:
+        json.dump(history, f)
+
+    # Current run resolves paper-1.24 and geyser-3.0 (already in history)
+    # paper-1.24.jar must exist since download_file has already run
+    _write_jar("downloads", "paper-1.24.jar")
+    current = {
+        ("paper", None): AssetInfo("paper-1.24.jar", "https://example.com/paper-1.24.jar", "abc"),
+        ("geyser", "PAPER"): AssetInfo("geyser-3.0.jar", "https://example.com/geyser-3.0.jar", "def"),
+    }
+
+    prune_downloads(current, keep=3)
+
+    # Paper: had 4 old + 1 new = 5, keep 3 → delete 2 oldest
+    assert os.path.isfile("downloads/paper-1.24.jar")
+    assert os.path.isfile("downloads/paper-1.23.jar")
+    assert os.path.isfile("downloads/paper-1.22.jar")
+    assert not os.path.isfile("downloads/paper-1.21.jar")  # pruned
+    assert not os.path.isfile("downloads/paper-1.20.jar")  # pruned
+
+    # Geyser: had 3 old, current is same as newest → 3 total, keep 3 → no pruning
+    assert os.path.isfile("downloads/geyser-3.0.jar")
+    assert os.path.isfile("downloads/geyser-2.0.jar")
+    assert os.path.isfile("downloads/geyser-1.0.jar")
+
+    # History was updated
+    with open("downloads/.download_history.json") as f:
+        updated = json.load(f)
+    assert "paper-1.24.jar" in updated["paper"]  # current added
+    assert "paper-1.20.jar" not in updated["paper"]  # pruned entry removed
+
+
+def test_prune_creates_history_on_first_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("downloads")
+
+    # paper-1.21.jar exists since download_file has already run
+    _write_jar("downloads", "paper-1.21.jar")
+    current = {
+        ("paper", None): AssetInfo("paper-1.21.jar", "https://example.com/paper-1.21.jar", "abc"),
+    }
+
+    prune_downloads(current, keep=3)
+
+    assert os.path.isfile("downloads/.download_history.json")
+    import json
+    with open("downloads/.download_history.json") as f:
+        history = json.load(f)
+    assert history["paper"] == ["paper-1.21.jar"]
+
+
+def test_prune_skips_manually_deleted_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    os.makedirs("downloads")
+
+    _write_jar("downloads", "paper-1.21.jar")
+    # paper-1.20.jar is in history but was manually deleted
+
+    import json
+    history = {"paper": ["paper-1.21.jar", "paper-1.20.jar"]}
+    with open("downloads/.download_history.json", "w") as f:
+        json.dump(history, f)
+
+    current = {
+        ("paper", None): AssetInfo("paper-1.22.jar", "https://example.com/paper-1.22.jar", "abc"),
+    }
+
+    prune_downloads(current, keep=3)
+
+    with open("downloads/.download_history.json") as f:
+        updated = json.load(f)
+    # paper-1.20.jar should be dropped from history since file doesn't exist
+    assert "paper-1.20.jar" not in updated["paper"]
 
 
 if __name__ == "__main__":
