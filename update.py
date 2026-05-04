@@ -106,10 +106,12 @@ def verify_checksum(filepath, expected_sha256):
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 # Each fetcher takes a config dict and returns (filename, download_url, sha256).
+# The filename must uniquely identify that asset, so version at a minimum, and also any variants.
+# For example: `floodgate-velocity-2.2.5.jar` is good, `floodgate-latest.jar` is bad.
 # sha256 is None when the source doesn't provide checksums (e.g. GitHub).
 # If the source *should* provide a checksum but didn't, the fetcher raises an error
 # (downgrade attack protection).
-# Adding a new source = writing one function + registering it in FETCHERS.
+# To add a fetcher, define a new function and add it to FETCHERS.
 
 
 def fetch_papermc(conf):
@@ -187,6 +189,16 @@ def fetch_hangar(conf):
                     part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
                     for part, enc in decoded_parts
                 )
+            # Need to extract version from the final redirect URL
+            # (e.g. /versions/2.9.6/builds/1132/downloads/spigot)
+            ver = version["name"]
+            parts = head.url.split("/")
+            for i, part in enumerate(parts):
+                if part == "versions" and i + 1 < len(parts):
+                    ver = parts[i + 1]
+                    break
+            base, ext = os.path.splitext(filename)
+            filename = f"{base}-{ver}{ext}"
             logging.warning(
                 f"External download for {project} — no checksum available. "
                 f"Proceeding without verification for {filename}"
@@ -252,7 +264,7 @@ def download_file(filename, download_url, sha256):
                 logging.warning(f"{filename} exists but checksum mismatch — re-downloading.")
                 os.remove(filepath)
         else:
-            logging.info(f"Already have {filename} — no checksum to verify.")
+            logging.info(f"Already have {filename} — no checksum to verify, assuming correct.")
             return
 
     # Download
@@ -267,7 +279,6 @@ def download_file(filename, download_url, sha256):
         try:
             verify_checksum(filepath, sha256)
         except ValueError as e:
-            logging.error(str(e))
             os.remove(filepath)
             raise
     else:
@@ -388,4 +399,9 @@ def main(config_path="update.conf"):
 if __name__ == "__main__":
     config_path = sys.argv[1] if len(sys.argv) > 1 else "update.conf"
     setup_logging()
-    main(config_path)
+    try:
+        main(config_path)
+    except Exception as e:
+        logging.error(str(e))
+        logging.info("--- Exited ---")
+        sys.exit(1)
