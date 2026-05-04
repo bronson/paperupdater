@@ -8,18 +8,19 @@ Run with:  pytest test_update.py
 
 import hashlib
 import os
+import shutil
 
 import pytest
 from unittest.mock import MagicMock, patch
 
 from update import (
     AssetInfo,
+    deploy_file,
     download_file,
     fetch_papermc,
     load_config,
     prune_old_downloads,
     resolve_asset,
-    update_symlink,
     verify_checksum,
     version_glob,
 )
@@ -69,81 +70,43 @@ def write_config(tmp_path, content):
     return str(config_path)
 
 
-# ── update_symlink ────────────────────────────────────────────────────────────
+# ── deploy_file ──────────────────────────────────────────────────────────────
 
 
-def test_symlink_is_created(tmp_path):
+def test_deploy_creates_file(tmp_path):
     jar = str(tmp_path / "paper-1.21.4-53.jar")
-    link = str(tmp_path / "paper.jar")
-    open(jar, "w").close()
+    dst = str(tmp_path / "paper.jar")
+    with open(jar, "w") as f:
+        f.write("jar contents")
 
-    assert update_symlink(jar, link) is True
-    assert os.path.islink(link)
-    assert os.readlink(link) == jar  # absolute
+    assert deploy_file(jar, dst) is True
+    assert os.path.isfile(dst)
+    assert open(dst).read() == "jar contents"
 
 
-def test_symlink_is_updated_to_new_version(tmp_path):
+def test_deploy_updates_to_new_version(tmp_path):
     old_jar = str(tmp_path / "paper-1.21.3-52.jar")
     new_jar = str(tmp_path / "paper-1.21.4-53.jar")
-    link = str(tmp_path / "paper.jar")
-    open(old_jar, "w").close()
-    open(new_jar, "w").close()
-    os.symlink(old_jar, link)
-    # Make new_jar appear newer than the symlink
-    t = os.lstat(link).st_mtime + 1
-    os.utime(new_jar, (t, t))
+    dst = str(tmp_path / "paper.jar")
+    with open(old_jar, "w") as f:
+        f.write("old")
+    with open(new_jar, "w") as f:
+        f.write("new")
+    shutil.copy2(old_jar, dst)
 
-    assert update_symlink(new_jar, link) is True
-    assert os.readlink(link) == new_jar
-
-
-def test_symlink_is_left_alone_when_manually_changed(tmp_path):
-    old_jar = str(tmp_path / "paper-1.21.3-52.jar")
-    new_jar = str(tmp_path / "paper-1.21.4-53.jar")
-    link = str(tmp_path / "paper.jar")
-    open(old_jar, "w").close()
-    open(new_jar, "w").close()
-    os.symlink(old_jar, link)
-    # Simulate user re-pointing the symlink after new_jar was downloaded
-    t = os.path.getmtime(new_jar) + 1
-    os.utime(link, (t, t), follow_symlinks=False)
-
-    assert update_symlink(new_jar, link) is False
-    assert os.readlink(link) == old_jar
+    assert deploy_file(new_jar, dst) is True
+    assert open(dst).read() == "new"
 
 
-def test_symlink_unchanged_when_already_current(tmp_path):
-    jar = str(tmp_path / "paper-1.21.4-53.jar")
-    link = str(tmp_path / "paper.jar")
-    open(jar, "w").close()
-    os.symlink(jar, link)  # absolute, matching what update_symlink creates
-
-    assert update_symlink(jar, link) is False
-    assert os.readlink(link) == jar
-
-
-def test_symlink_replaces_regular_file(tmp_path):
-    jar = str(tmp_path / "paper-1.21.4-53.jar")
-    link = str(tmp_path / "paper.jar")
-    open(jar, "w").close()
-    # Someone put a regular file where the symlink should go
-    with open(link, "w") as f:
-        f.write("not a jar")
-
-    assert update_symlink(jar, link) is True
-    assert os.path.islink(link)
-    assert os.readlink(link) == jar
-
-
-def test_symlink_creates_parent_dirs(tmp_path):
+def test_deploy_creates_parent_dirs(tmp_path):
     jar = str(tmp_path / "downloads" / "paper-1.21.4-53.jar")
     os.makedirs(tmp_path / "downloads")
-    open(jar, "w").close()
-    link = str(tmp_path / "searanch" / "plugins" / "squaremap.jar")
+    with open(jar, "w") as f:
+        f.write("jar contents")
+    dst = str(tmp_path / "searanch" / "plugins" / "squaremap.jar")
 
-    assert update_symlink(jar, link) is True
-    assert os.path.islink(link)
-    assert os.readlink(link) == jar
+    assert deploy_file(jar, dst) is True
+    assert open(dst).read() == "jar contents"
 
 
 # ── config loading ────────────────────────────────────────────────────────────

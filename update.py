@@ -6,6 +6,7 @@ import glob
 import hashlib
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -329,26 +330,13 @@ def download_file(asset):
 # ── Symlinks ──────────────────────────────────────────────────────────────────
 
 
-def update_symlink(target, link_path):
-    """Point link_path at target via absolute symlink. Returns True if changed."""
-    abs_target = os.path.abspath(target)
-
-    if os.path.islink(link_path) and os.readlink(link_path) == abs_target:
-        logging.info(f"{link_path} already points to {abs_target}.")
-        return False
-
-    if os.path.islink(link_path) and os.lstat(link_path).st_mtime > os.path.getmtime(target):
-        logging.warning(f"{link_path} appears to have been manually changed — leaving it alone.")
-        return False
-
-    parent = os.path.dirname(link_path)
+def deploy_file(src, dst):
+    """Copy src to dst. Returns True always."""
+    parent = os.path.dirname(dst)
     if parent:
         os.makedirs(parent, exist_ok=True)
-
-    if os.path.lexists(link_path):
-        os.remove(link_path)
-    os.symlink(abs_target, link_path)
-    logging.info(f"Updated {link_path} -> {abs_target}.")
+    shutil.copy2(src, dst)
+    logging.info(f"Deployed {src} -> {dst}.")
     return True
 
 
@@ -420,7 +408,7 @@ def main(config_path="update.conf"):
     for d in deployments:
         asset = unique_assets[(d.asset_name, d.platform)]
         asset_path = os.path.join(DOWNLOADS_DIR, asset.filename)
-        if update_symlink(asset_path, d.path):
+        if deploy_file(asset_path, d.path):
             changed_servers.add(d.server_name)
             prune_old_downloads(asset.download_glob, versions_to_keep)
 

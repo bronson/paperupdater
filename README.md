@@ -6,18 +6,21 @@ Based on:
 
 This script checks to see if there are newer versions of your
 Minecraft server or plugins available. If so, it downloads them, verifies the
-signatures, and updates symlinks.
+signatures, and copies them into your game directory.
 
 ## Features
 
 - supports multiple servers
-  - (if you have 12 servers, the file will be downloaded once and linked 12 times)
-- verifies checksumps
+- verifies checksums
 - prunes old versions of files
 
 ## Installation
 
-TODO
+Single server? Clone paperudater into your Minecraft directory.
+
+TODO: need to verify this use case.
+
+Multiple servers? Clone paperupdater into a directory somewhere above your server directories.
 
 ### Config File
 
@@ -30,8 +33,6 @@ TODO
 If you don't specify a config file on the command line, the script will read from `update.conf.py`.
 
 ## Download Process
-
-TODO: talk about how symlinks work
 
 Logs are written to `paper_updater.log`, in the same directory as the update script is run.
 
