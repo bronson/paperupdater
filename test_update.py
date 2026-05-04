@@ -13,6 +13,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from update import (
+    AssetInfo,
     download_file,
     fetch_papermc,
     load_config,
@@ -184,10 +185,10 @@ def test_verify_checksum_raises_for_wrong_hash(tmp_path):
 def test_resolve_papermc_asset():
     responses, jar_name = fake_papermc_responses("paper", "1.21.4", 53)
     with patch("update.requests.get", side_effect=responses):
-        filename, url, sha256 = resolve_asset("paper")
+        asset = resolve_asset("paper")
 
-    assert filename == jar_name
-    assert sha256 == FAKE_SHA256
+    assert asset.filename == jar_name
+    assert asset.sha256 == FAKE_SHA256
 
 
 def test_resolve_unknown_asset_raises():
@@ -211,7 +212,7 @@ def test_download_file_saves_and_verifies(tmp_path, monkeypatch):
     url = f"https://example.com/{jar_name}"
 
     with patch("update.requests.get", side_effect=_fake_download_response()):
-        download_file(jar_name, url, FAKE_SHA256)
+        download_file(AssetInfo(jar_name, url, FAKE_SHA256))
 
     assert os.path.isfile(f"downloads/{jar_name}")
     assert open(f"downloads/{jar_name}", "rb").read() == FAKE_JAR_BYTES
@@ -227,7 +228,7 @@ def test_download_file_skips_if_already_present(tmp_path, monkeypatch):
 
     # Should not fetch anything
     with patch("update.requests.get") as mock_get:
-        download_file(jar_name, "https://example.com/irrelevant", FAKE_SHA256)
+        download_file(AssetInfo(jar_name, "https://example.com/irrelevant", FAKE_SHA256))
         mock_get.assert_not_called()
 
 
@@ -239,7 +240,7 @@ def test_download_file_deletes_on_checksum_mismatch(tmp_path, monkeypatch):
 
     with patch("update.requests.get", side_effect=_fake_download_response()):
         with pytest.raises(ValueError, match="Checksum mismatch"):
-            download_file(jar_name, url, bad_sha256)
+            download_file(AssetInfo(jar_name, url, bad_sha256))
 
     assert not os.path.isfile(f"downloads/{jar_name}")
 
@@ -284,8 +285,8 @@ def test_download_file_warns_when_checksum_optional_and_missing(tmp_path, monkey
 
     with patch("update.requests.get", side_effect=[release_resp, download_resp]):
         with caplog.at_level(logging.WARNING):
-            filename, url, sha256 = resolve_asset("discordsrv")
-            download_file(filename, url, sha256)
+            asset = resolve_asset("discordsrv")
+            download_file(asset)
 
     assert os.path.isfile(f"downloads/{jar_name}")
     assert any("not verified" in r.message for r in caplog.records)

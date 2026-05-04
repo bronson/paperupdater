@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import namedtuple
 
 import requests
 
@@ -44,6 +45,10 @@ ASSETS = {
     "simple-voice-chat": {"source": "hangar",  "project": "henkelmax/SimpleVoiceChat"},
     "discordsrv":        {"source": "github",  "project": "DiscordSRV/DiscordSRV"},
 }
+
+AssetInfo = namedtuple("AssetInfo", "filename url sha256")
+Deployment = namedtuple("Deployment", "asset_name platform server_name path")
+
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -105,13 +110,38 @@ def verify_checksum(filepath, expected_sha256):
 
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
-# Each fetcher takes a config dict and returns (filename, download_url, sha256).
+# Each fetcher takes a config dict and returns an AssetInfo.
 # The filename must uniquely identify that asset, so version at a minimum, and also any variants.
 # For example: `floodgate-velocity-2.2.5.jar` is good, `floodgate-latest.jar` is bad.
 # sha256 is None when the source doesn't provide checksums (e.g. GitHub).
 # If the source *should* provide a checksum but didn't, the fetcher raises an error
 # (downgrade attack protection).
 # To add a fetcher, define a new function and add it to FETCHERS.
+
+
+def filename_from_url(url, fallback_version):
+    """Determine a filename from a URL's Content-Disposition header and redirect path."""
+    head = requests.head(url, headers=HEADERS, allow_redirects=True)
+    cd = head.headers.get("Content-Disposition", "")
+    filename = fallback_version + ".jar"
+    if 'filename="' in cd:
+        raw = cd.split('filename="')[1].split('"')[0]
+        # Decode RFC 2047 encoding (e.g. =?UTF-8?Q?floodgate-spigot.jar?=)
+        decoded_parts = email.header.decode_header(raw)
+        filename = ''.join(
+            part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
+            for part, enc in decoded_parts
+        )
+    # Extract version from the final redirect URL
+    # (e.g. /versions/2.9.6/builds/1132/downloads/spigot)
+    ver = fallback_version
+    parts = head.url.split("/")
+    for i, part in enumerate(parts):
+        if part == "versions" and i + 1 < len(parts):
+            ver = parts[i + 1]
+            break
+    base, ext = os.path.splitext(filename)
+    return f"{base}-{ver}{ext}"
 
 
 def fetch_papermc(conf):
@@ -137,7 +167,7 @@ def fetch_papermc(conf):
                     f"Downgrade attack suspected: PaperMC did not provide a checksum "
                     f"for {project} v{version} build {build['id']}"
                 )
-            return dl["name"], dl["url"], sha256
+            return AssetInfo(dl["name"], dl["url"], sha256)
 
     raise RuntimeError(f"No stable builds found for {project}.")
 
@@ -152,58 +182,34 @@ def fetch_hangar(conf):
 
     version = result[0]
     downloads = version.get("downloads", {})
-    requested_platform = conf.get("platform")
+    platform_names = list(downloads)
+    if conf.get("platform") and conf["platform"] in downloads:
+        platform_names = [conf["platform"]] + [p for p in platform_names if p != conf["platform"]]
 
-    # Try to find a Hangar-hosted download (has downloadUrl + fileInfo)
-    # Prefer the requested platform, then fall back to any
-    ordered = list(downloads.items())
-    if requested_platform and requested_platform in downloads:
-        ordered = [(requested_platform, downloads[requested_platform])] + [
-            (k, v) for k, v in ordered if k != requested_platform
-        ]
-
-    for platform, dl in ordered:
+    # Try Hangar-hosted download first (has checksum)
+    for platform_name in platform_names:
+        dl = downloads[platform_name]
         if dl.get("downloadUrl") and dl.get("fileInfo"):
             fi = dl["fileInfo"]
             sha256 = fi.get("sha256Hash")
             if not sha256:
                 raise RuntimeError(
                     f"Downgrade attack suspected: Hangar did not provide a checksum "
-                    f"for {project} {version['name']} ({platform})"
+                    f"for {project} {version['name']} ({platform_name})"
                 )
-            return fi["name"], dl["downloadUrl"], sha256
+            return AssetInfo(fi["name"], dl["downloadUrl"], sha256)
 
     # Fall back to external URL (no checksum available)
-    for platform, dl in ordered:
+    for platform_name in platform_names:
+        dl = downloads[platform_name]
         if dl.get("externalUrl"):
             url = dl["externalUrl"]
-            # Get the filename from the Content-Disposition header
-            head = requests.head(url, headers=HEADERS, allow_redirects=True)
-            cd = head.headers.get("Content-Disposition", "")
-            filename = version["name"] + ".jar"
-            if 'filename="' in cd:
-                raw = cd.split('filename="')[1].split('"')[0]
-                # Decode RFC 2047 encoding (e.g. =?UTF-8?Q?floodgate-spigot.jar?=)
-                decoded_parts = email.header.decode_header(raw)
-                filename = ''.join(
-                    part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
-                    for part, enc in decoded_parts
-                )
-            # Need to extract version from the final redirect URL
-            # (e.g. /versions/2.9.6/builds/1132/downloads/spigot)
-            ver = version["name"]
-            parts = head.url.split("/")
-            for i, part in enumerate(parts):
-                if part == "versions" and i + 1 < len(parts):
-                    ver = parts[i + 1]
-                    break
-            base, ext = os.path.splitext(filename)
-            filename = f"{base}-{ver}{ext}"
+            filename = filename_from_url(url, version["name"])
             logging.warning(
                 f"External download for {project} — no checksum available. "
                 f"Proceeding without verification for {filename}"
             )
-            return filename, url, None
+            return AssetInfo(filename, url, None)
 
     raise RuntimeError(f"No downloadable files for {project} on Hangar.")
 
@@ -220,7 +226,7 @@ def fetch_github(conf):
 
     asset = jar_assets[0]
     logging.warning(f"No checksum available for {asset['name']} (GitHub).")
-    return asset["name"], asset["browser_download_url"], None
+    return AssetInfo(asset["name"], asset["browser_download_url"], None)
 
 
 FETCHERS = {
@@ -244,45 +250,45 @@ def load_config(path="update.conf"):
 # ── Download ──────────────────────────────────────────────────────────────────
 
 
-def download_file(filename, download_url, sha256):
-    """Download a file into DOWNLOADS_DIR, verifying checksum if available.
+def download_file(asset):
+    """Download an asset into DOWNLOADS_DIR, verifying checksum if available.
 
-    sha256 is None when the source doesn't provide checksums (download proceeds
-    with a warning). If a checksum is provided and doesn't match, the file is
-    deleted and ValueError is raised.
+    asset.sha256 is None when the source doesn't provide checksums (download
+    proceeds with a warning). If a checksum is provided and doesn't match,
+    the file is deleted and ValueError is raised.
     """
-    filepath = os.path.join(DOWNLOADS_DIR, filename)
+    filepath = os.path.join(DOWNLOADS_DIR, asset.filename)
 
     # Already downloaded and verified?
     if os.path.isfile(filepath):
-        if sha256:
+        if asset.sha256:
             try:
-                verify_checksum(filepath, sha256)
-                logging.info(f"Already have {filename} — no download needed.")
+                verify_checksum(filepath, asset.sha256)
+                logging.info(f"Already have {asset.filename} — no download needed.")
                 return
             except ValueError:
-                logging.warning(f"{filename} exists but checksum mismatch — re-downloading.")
+                logging.warning(f"{asset.filename} exists but checksum mismatch — re-downloading.")
                 os.remove(filepath)
         else:
-            logging.info(f"Already have {filename} — no checksum to verify, assuming correct.")
+            logging.info(f"Already have {asset.filename} — no checksum to verify, assuming correct.")
             return
 
     # Download
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-    response = fetch(download_url)
+    response = fetch(asset.url)
     with open(filepath, "wb") as f:
         f.write(response.content)
     logging.info(f"Saved to {filepath}.")
 
     # Verify
-    if sha256:
+    if asset.sha256:
         try:
-            verify_checksum(filepath, sha256)
+            verify_checksum(filepath, asset.sha256)
         except ValueError as e:
             os.remove(filepath)
             raise
     else:
-        logging.warning(f"No checksum available for {filename} — download not verified.")
+        logging.warning(f"No checksum available for {asset.filename} — download not verified.")
 
 
 # ── Symlinks ──────────────────────────────────────────────────────────────────
@@ -317,7 +323,7 @@ def update_symlink(target, link_path):
 
 def resolve_asset(asset_name, platform=None):
     """Look up asset in registry and resolve its latest version.
-    Returns (filename, download_url, sha256).
+    Returns an AssetInfo.
     """
     if asset_name not in ASSETS:
         raise ValueError(f"Unknown asset: {asset_name}")
@@ -344,43 +350,43 @@ def main(config_path="update.conf"):
     servers = config.get("servers", {})
 
     # 2. Build placements: (asset_name, platform, server_name, dest_path)
-    placements = []
+    deployments = []
     for server_name, server_conf in servers.items():
         root = server_conf.get("root", f"./{server_name}")
         server_asset = server_conf["server"]
-        placements.append((server_asset, None, server_name, f"{root}/{server_asset}.jar"))
+        deployments.append(Deployment(server_asset, None, server_name, f"{root}/{server_asset}.jar"))
         platform = SERVER_PLATFORMS.get(server_asset)
         for plugin_name in server_conf.get("plugins", []):
-            placements.append((plugin_name, platform, server_name, f"{root}/plugins/{plugin_name}.jar"))
+            deployments.append(Deployment(plugin_name, platform, server_name, f"{root}/plugins/{plugin_name}.jar"))
 
-    # 3. Check for dest collisions
+    # 3. Check for path collisions
     seen = {}
-    for asset_name, _platform, _server_name, dest in placements:
-        if dest in seen:
+    for d in deployments:
+        if d.path in seen:
             raise RuntimeError(
-                f"Error: {asset_name} and {seen[dest]} both symlink to {dest}"
+                f"Error: {d.asset_name} and {seen[d.path]} both symlink to {d.path}"
             )
-        seen[dest] = asset_name
+        seen[d.path] = d.asset_name
 
     # 4. Resolve unique assets (dedup by name + platform)
     unique_assets = {}
-    for asset_name, platform, _, _ in placements:
-        key = (asset_name, platform)
+    for d in deployments:
+        key = (d.asset_name, d.platform)
         if key not in unique_assets:
-            logging.info(f"Resolving {asset_name}{' (' + platform + ')' if platform else ''}...")
-            unique_assets[key] = resolve_asset(asset_name, platform)
+            logging.info(f"Resolving {d.asset_name}{' (' + d.platform + ')' if d.platform else ''}...")
+            unique_assets[key] = resolve_asset(d.asset_name, d.platform)
 
     # 5. Download
-    for (asset_name, _platform), (filename, url, sha256) in unique_assets.items():
-        download_file(filename, url, sha256)
+    for asset in unique_assets.values():
+        download_file(asset)
 
     # 6. Update symlinks
     changed_servers = set()
-    for asset_name, platform, server_name, dest in placements:
-        filename = unique_assets[(asset_name, platform)][0]
-        download_path = os.path.join(DOWNLOADS_DIR, filename)
-        if update_symlink(download_path, dest):
-            changed_servers.add(server_name)
+    for d in deployments:
+        asset = unique_assets[(d.asset_name, d.platform)]
+        asset_path = os.path.join(DOWNLOADS_DIR, asset.filename)
+        if update_symlink(asset_path, d.path):
+            changed_servers.add(d.server_name)
 
     # 7. Run restart hooks
     for server_name in changed_servers:
