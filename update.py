@@ -335,6 +335,8 @@ def deploy_file(src, dst):
     parent = os.path.dirname(dst)
     if parent:
         os.makedirs(parent, exist_ok=True)
+    if os.path.lexists(dst):
+        os.remove(dst)
     shutil.copy2(src, dst)
     logging.info(f"Deployed {src} -> {dst}.")
     return True
