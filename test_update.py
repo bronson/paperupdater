@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Tests for update.py
+"""Tests the update.py script
 
 Run with:  pytest test_update.py
        or:  ./test_update.py
@@ -20,6 +20,7 @@ from update import (
     fetch_papermc,
     load_config,
     prune_old_downloads,
+    reconcile_plugins,
     resolve_asset,
     verify_checksum,
     version_glob,
@@ -274,6 +275,62 @@ def test_version_glob_returns_none_when_no_version():
 
 def test_version_glob_returns_none_when_version_not_found():
     assert version_glob("something.jar", "9.9.9") is None
+
+
+# ── reconcile_plugins ────────────────────────────────────────────────────────
+
+
+def _make_plugin_jar(plugins_dir, name):
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    p = plugins_dir / f"{name}.jar"
+    p.write_text("")
+    return str(p)
+
+
+def test_reconcile_removes_disabled_plugin(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    _make_plugin_jar(plugins_dir, "geyser")
+    _make_plugin_jar(plugins_dir, "floodgate")
+
+    # geyser was disabled, floodgate stays configured
+    removed = reconcile_plugins(str(tmp_path), ["floodgate"])
+
+    assert removed is True
+    assert not os.path.isfile(str(plugins_dir / "geyser.jar"))
+    assert os.path.isfile(str(plugins_dir / "floodgate.jar"))
+
+
+def test_reconcile_leaves_unmanaged_plugins_alone(tmp_path):
+    """Jars that aren't managed assets must never be touched."""
+    plugins_dir = tmp_path / "plugins"
+    _make_plugin_jar(plugins_dir, "geyser")
+    _make_plugin_jar(plugins_dir, "my-custom-plugin")
+    _make_plugin_jar(plugins_dir, "totally-unrelated")
+
+    removed = reconcile_plugins(str(tmp_path), [])
+
+    # geyser is managed and disabled -> removed; others left alone
+    assert removed is True
+    assert not os.path.isfile(str(plugins_dir / "geyser.jar"))
+    assert os.path.isfile(str(plugins_dir / "my-custom-plugin.jar"))
+    assert os.path.isfile(str(plugins_dir / "totally-unrelated.jar"))
+
+
+def test_reconcile_noop_when_all_configured(tmp_path):
+    plugins_dir = tmp_path / "plugins"
+    _make_plugin_jar(plugins_dir, "geyser")
+    _make_plugin_jar(plugins_dir, "floodgate")
+
+    removed = reconcile_plugins(str(tmp_path), ["geyser", "floodgate"])
+
+    assert removed is False
+    assert os.path.isfile(str(plugins_dir / "geyser.jar"))
+    assert os.path.isfile(str(plugins_dir / "floodgate.jar"))
+
+
+def test_reconcile_noop_when_no_plugins_dir(tmp_path):
+    # No plugins directory exists yet -> nothing to do, no error
+    assert reconcile_plugins(str(tmp_path), ["geyser"]) is False
 
 
 # ── prune_old_downloads ──────────────────────────────────────────────────────

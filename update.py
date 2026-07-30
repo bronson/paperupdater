@@ -269,6 +269,29 @@ def load_config(path="update.conf.py"):
 # ── Prune ─────────────────────────────────────────────────────────────────────
 
 
+def reconcile_plugins(root, configured_plugins):
+    """Remove plugin jars from {root}/plugins that are no longer configured.
+
+    Only jars whose stem is a managed asset (a key in ASSETS) and that are not
+    listed in configured_plugins are removed. Manually-installed jars that this
+    tool doesn't manage are always left untouched. Returns True if any file
+    was removed.
+    """
+    plugins_dir = os.path.join(root, "plugins")
+    if not os.path.isdir(plugins_dir):
+        return False
+
+    configured = set(configured_plugins)
+    removed = False
+    for jar in glob.glob(os.path.join(plugins_dir, "*.jar")):
+        stem = os.path.splitext(os.path.basename(jar))[0]
+        if stem in ASSETS and stem not in configured:
+            logging.info(f"Removing disabled plugin: {jar}")
+            os.remove(jar)
+            removed = True
+    return removed
+
+
 def prune_old_downloads(download_glob, keep):
     """Remove old versions of the same artifact, keeping the newest `keep` files."""
     if not download_glob or keep is None or keep <= 0:
@@ -414,7 +437,13 @@ def main(config_path="update.conf"):
             changed_servers.add(d.server_name)
             prune_old_downloads(asset.download_glob, versions_to_keep)
 
-    # 7. Run restart hooks
+    # 7. Remove plugins that have been disabled (no longer in the config)
+    for server_name, server_conf in servers.items():
+        root = server_conf.get("root", f"./{server_name}")
+        if reconcile_plugins(root, server_conf.get("plugins", [])):
+            changed_servers.add(server_name)
+
+    # 8. Run restart hooks
     for server_name in changed_servers:
         hook = servers[server_name].get("restart_hook")
         if hook:

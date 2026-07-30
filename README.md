@@ -12,6 +12,7 @@ signatures, and copies them into your game directory.
 
 - supports multiple servers
 - verifies checksums
+- enables/disables plugins
 - prunes old versions of files
 
 ## Installation
@@ -26,16 +27,30 @@ Multiple servers? Clone paperupdater into a directory somewhere above your serve
 
 ## Usage
 
+To have Paper Updater use the configuration in the update.conf.py file in the current directory:
+
 ```sh
-./updater.py [config_file]
+./updater.py
 ```
 
-If you don't specify a config file on the command line, the script will read from `update.conf.py`.
+or just specify the config file to use on the command line:
 
-## Download Process
+```sh
+./updater.py update.conf.py
+```
+
+## Download and Install
 
 Logs are written to `paper_updater.log`, in the same directory as the update script is run.
 
+### Disabling plugins
+
+When you remove a plugin from a server's `plugins` list, Paper Updater will
+delete the corresponding .jar from that server's plugins.
+
+Only jars belonging to managed assets (see ASSETS near the top of the
+update.py script) get deleted. Jars for plugins you installed manually
+are left untouched.
 
 ## Config Options
 
@@ -56,7 +71,7 @@ Set versions_to_keep to None to skip pruning.
 
 A restart hook is a shell command that can restart a particular server.
 
-Each server can have a restart_hook, and there's a global restart hook.
+Each server can have its own restart_hook, and there's a global restart hook too.
 If any server has received updated files, that server's restart hook
 is called. If any server's restart hook was called, the global restart
 hook will be called last.
