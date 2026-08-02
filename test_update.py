@@ -17,6 +17,7 @@ from update import (
     AssetInfo,
     deploy_file,
     download_file,
+    fetch_hangar,
     fetch_papermc,
     load_config,
     prune_old_downloads,
@@ -160,6 +161,104 @@ def test_resolve_papermc_asset():
 def test_resolve_unknown_asset_raises():
     with pytest.raises(ValueError, match="Unknown asset"):
         resolve_asset("nonexistent_plugin")
+
+
+# ── Hangar MC-version filtering ─────────────────────────────────────────────
+
+
+def fake_hangar_versions(versions):
+    """Build a mock for the Hangar versions list endpoint.
+
+    Each entry: {"name", "platform", "mc_versions": [...], "jar_name"}.
+    """
+    result = []
+    for v in versions:
+        result.append({
+            "name": v["name"],
+            "createdAt": v.get("created", ""),
+            "downloads": {
+                v["platform"]: {
+                    "fileInfo": {
+                        "name": v["jar_name"],
+                        "sha256Hash": v.get("sha256", FAKE_SHA256),
+                    },
+                    "externalUrl": None,
+                    "downloadUrl": f"https://example.com/{v['jar_name']}",
+                }
+            },
+            "platformDependencies": {v["platform"]: v["mc_versions"]},
+        })
+    resp = MagicMock()
+    resp.json.return_value = {"result": result}
+    return resp
+
+
+SQUAREMAP_VERSIONS = [
+    {"name": "1.3.13.1", "platform": "PAPER", "mc_versions": ["26.1.2"],
+     "jar_name": "squaremap-paper-mc26.1.2-1.3.13.1.jar"},
+    {"name": "1.3.15", "platform": "PAPER", "mc_versions": ["26.2"],
+     "jar_name": "squaremap-paper-mc26.2-1.3.15.jar"},
+]
+
+
+def test_fetch_hangar_picks_build_for_running_mc_version():
+    resp = fake_hangar_versions(SQUAREMAP_VERSIONS)
+    with patch("update.fetch", return_value=resp):
+        asset = fetch_hangar({
+            "project": "OskarStark/squaremap",
+            "platform": "PAPER",
+            "mc_version": "26.2",
+        })
+    assert asset.filename == "squaremap-paper-mc26.2-1.3.15.jar"
+
+
+def test_fetch_hangar_without_mc_version_takes_most_recent():
+    resp = fake_hangar_versions(SQUAREMAP_VERSIONS)
+    with patch("update.fetch", return_value=resp):
+        asset = fetch_hangar({"project": "OskarStark/squaremap", "platform": "PAPER"})
+    assert asset.filename == "squaremap-paper-mc26.1.2-1.3.13.1.jar"
+
+
+def test_fetch_hangar_raises_when_no_compatible_version():
+    resp = fake_hangar_versions(SQUAREMAP_VERSIONS)
+    with patch("update.fetch", return_value=resp):
+        with pytest.raises(RuntimeError, match="No .* release on Hangar has a build"):
+            fetch_hangar({
+                "project": "OskarStark/squaremap",
+                "platform": "PAPER",
+                "mc_version": "99.9",
+            })
+
+
+def test_fetch_hangar_paginates_to_find_compatible_version():
+    # Page 1 is full (25 results) of 26.1.2 builds; the 26.2 build is on page 2.
+    page1 = [{"name": f"1.3.13.{i}", "platform": "PAPER", "mc_versions": ["26.1.2"],
+              "jar_name": f"squaremap-paper-mc26.1.2-1.3.13.{i}.jar"} for i in range(25)]
+    page2 = [{"name": "1.3.15", "platform": "PAPER", "mc_versions": ["26.2"],
+              "jar_name": "squaremap-paper-mc26.2-1.3.15.jar"}]
+    resp1 = fake_hangar_versions(page1)
+    resp2 = fake_hangar_versions(page2)
+    with patch("update.fetch", side_effect=[resp1, resp2]):
+        asset = fetch_hangar({
+            "project": "OskarStark/squaremap",
+            "platform": "PAPER",
+            "mc_version": "26.2",
+        })
+    assert asset.filename == "squaremap-paper-mc26.2-1.3.15.jar"
+
+
+def test_fetch_papermc_sets_mc_version_for_paper():
+    responses, _ = fake_papermc_responses("paper", "26.2", 53)
+    with patch("update.requests.get", side_effect=responses):
+        asset = resolve_asset("paper")
+    assert asset.mc_version == "26.2"
+
+
+def test_fetch_papermc_no_mc_version_for_velocity():
+    responses, _ = fake_papermc_responses("velocity", "3.5.0-SNAPSHOT", 594)
+    with patch("update.requests.get", side_effect=responses):
+        asset = resolve_asset("velocity")
+    assert asset.mc_version is None
 
 
 # ── download_file ─────────────────────────────────────────────────────────────

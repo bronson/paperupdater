@@ -24,6 +24,8 @@ DOWNLOADS_DIR = "downloads"
 
 PAPER_API_BASE = "https://fill.papermc.io/v3"
 HANGAR_API_BASE = "https://hangar.papermc.io/api/v1"
+# Hangar caps the page size at 25 results; fetch_hangar pages through at this size.
+HANGAR_PAGE_SIZE = 25
 GITHUB_API_BASE = "https://api.github.com"
 
 # ── Asset Registry ────────────────────────────────────────────────────────────
@@ -35,6 +37,11 @@ SERVER_PLATFORMS = {
     "velocity": "VELOCITY",
     "waterfall": "WATERFALL",
 }
+
+# Server platforms whose resolved version is a Minecraft version, used to match
+# plugin builds to the running server. Proxies like Velocity (whose version is
+# the proxy version, not Minecraft's) are excluded.
+MC_VERSIONED_SERVERS = {"paper", "waterfall"}
 
 ASSETS = {
     # Servers
@@ -48,7 +55,7 @@ ASSETS = {
     "discordsrv":        {"source": "github",  "project": "DiscordSRV/DiscordSRV"},
 }
 
-AssetInfo = namedtuple("AssetInfo", "filename url sha256 download_glob")
+AssetInfo = namedtuple("AssetInfo", "filename url sha256 download_glob mc_version", defaults=(None,))
 Deployment = namedtuple("Deployment", "asset_name platform server_name path")
 
 
@@ -170,26 +177,47 @@ def fetch_papermc(conf):
                     f"for {project} v{version} build {build['id']}"
                 )
             full_version = f"{version}-{build['id']}"
-            return AssetInfo(dl["name"], dl["url"], sha256, version_glob(dl["name"], full_version))
+            mc_version = version if project in MC_VERSIONED_SERVERS else None
+            return AssetInfo(dl["name"], dl["url"], sha256, version_glob(dl["name"], full_version), mc_version)
 
     raise RuntimeError(f"No stable builds found for {project}.")
 
 
-def fetch_hangar(conf):
-    """Resolve latest release from Hangar API."""
-    project = conf["project"]
-    resp = fetch(f"{HANGAR_API_BASE}/projects/{project}/versions?limit=1&offset=0")
-    result = resp.json().get("result", [])
-    if not result:
-        raise RuntimeError(f"No versions found for {project} on Hangar.")
+def _hangar_supports(version_entry, platform, mc_version):
+    """True if a Hangar version declares support for mc_version on platform."""
+    deps = version_entry.get("platformDependencies", {})
+    return mc_version in deps.get(platform, [])
 
-    version = result[0]
+
+def _iter_hangar_versions(project):
+    """Yield all Hangar versions for a project, newest-first, paging as needed."""
+    offset = 0
+    while True:
+        resp = fetch(f"{HANGAR_API_BASE}/projects/{project}/versions"
+                     f"?limit={HANGAR_PAGE_SIZE}&offset={offset}")
+        result = resp.json().get("result", [])
+        if not result:
+            return
+        yield from result
+        if len(result) < HANGAR_PAGE_SIZE:
+            return
+        offset += HANGAR_PAGE_SIZE
+
+
+def _hangar_download(project, version, platform):
+    """Return an AssetInfo for a Hangar version's build, or None if it has no
+    usable build for the requested platform.
+
+    Prefers the Hangar-hosted build (which carries a checksum); falls back to an
+    external URL (no checksum). When `platform` is given, only that platform's
+    build is considered — we never silently substitute another platform's jar.
+    """
     downloads = version.get("downloads", {})
-    platform_names = list(downloads)
-    if conf.get("platform") and conf["platform"] in downloads:
-        platform_names = [conf["platform"]] + [p for p in platform_names if p != conf["platform"]]
+    if platform:
+        platform_names = [platform] if platform in downloads else []
+    else:
+        platform_names = list(downloads)
 
-    # Try Hangar-hosted download first (has checksum)
     for platform_name in platform_names:
         dl = downloads[platform_name]
         if dl.get("downloadUrl") and dl.get("fileInfo"):
@@ -200,9 +228,9 @@ def fetch_hangar(conf):
                     f"Downgrade attack suspected: Hangar did not provide a checksum "
                     f"for {project} {version['name']} ({platform_name})"
                 )
-            return AssetInfo(fi["name"], dl["downloadUrl"], sha256, version_glob(fi["name"], version["name"]))
+            return AssetInfo(fi["name"], dl["downloadUrl"], sha256,
+                             version_glob(fi["name"], version["name"]), None)
 
-    # Fall back to external URL (no checksum available)
     for platform_name in platform_names:
         dl = downloads[platform_name]
         if dl.get("externalUrl"):
@@ -212,9 +240,38 @@ def fetch_hangar(conf):
                 f"External download for {project} — no checksum available. "
                 f"Proceeding without verification for {filename}"
             )
-            return AssetInfo(filename, url, None, version_glob(filename, version["name"]))
+            return AssetInfo(filename, url, None, version_glob(filename, version["name"]), None)
 
-    raise RuntimeError(f"No downloadable files for {project} on Hangar.")
+    return None
+
+
+def fetch_hangar(conf):
+    """Resolve the newest Hangar release compatible with the target.
+
+    Versions are scanned newest-first (paging if necessary); the first that both
+    declares support for the requested Minecraft version (when `mc_version` is
+    set) and offers a build for the requested platform is returned. If no
+    compatible version exists anywhere in the project's history, this raises —
+    the same fail-loud policy used for missing checksums.
+
+    This matters because some plugins publish parallel release lines per
+    Minecraft version (e.g. squaremap 1.3.15 for 26.2 alongside 1.3.13.1 for
+    26.1.2); taking the most-recently-published version would grab the wrong
+    branch.
+    """
+    project = conf["project"]
+    platform = conf.get("platform")
+    mc_version = conf.get("mc_version")
+
+    for version in _iter_hangar_versions(project):
+        if mc_version and not _hangar_supports(version, platform, mc_version):
+            continue
+        asset = _hangar_download(project, version, platform)
+        if asset is not None:
+            return asset
+
+    mc_part = f" MC {mc_version}" if mc_version else ""
+    raise RuntimeError(f"No {project} release on Hangar has a build for {platform or 'any'}{mc_part}.")
 
 
 def fetch_github(conf):
@@ -230,7 +287,7 @@ def fetch_github(conf):
     asset = jar_assets[0]
     logging.warning(f"No checksum available for {asset['name']} (GitHub).")
     tag = release.get("tag_name", "").lstrip("v")
-    return AssetInfo(asset["name"], asset["browser_download_url"], None, version_glob(asset["name"], tag))
+    return AssetInfo(asset["name"], asset["browser_download_url"], None, version_glob(asset["name"], tag), None)
 
 
 def version_glob(filename, version):
@@ -368,7 +425,7 @@ def deploy_file(src, dst):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
-def resolve_asset(asset_name, platform=None):
+def resolve_asset(asset_name, platform=None, mc_version=None):
     """Look up asset in registry and resolve its latest version.
     Returns an AssetInfo.
     """
@@ -379,6 +436,8 @@ def resolve_asset(asset_name, platform=None):
     conf.update(ASSETS[asset_name])
     if platform:
         conf["platform"] = platform
+    if mc_version:
+        conf["mc_version"] = mc_version
 
     source = conf["source"]
     fetcher = FETCHERS.get(source)
@@ -417,11 +476,17 @@ def main(config_path="update.conf"):
 
     # 4. Resolve unique assets (dedup by name + platform)
     unique_assets = {}
+    server_mc_versions = {}  # server_name -> running Minecraft version (if MC-versioned)
     for d in deployments:
         key = (d.asset_name, d.platform)
+        is_server = d.asset_name in SERVER_PLATFORMS
         if key not in unique_assets:
+            # Match plugins to their server's Minecraft version, if known.
+            mc_version = server_mc_versions.get(d.server_name)
             logging.info(f"Resolving {d.asset_name}{' (' + d.platform + ')' if d.platform else ''}...")
-            unique_assets[key] = resolve_asset(d.asset_name, d.platform)
+            unique_assets[key] = resolve_asset(d.asset_name, d.platform, mc_version=mc_version)
+        if is_server:
+            server_mc_versions[d.server_name] = unique_assets[key].mc_version
 
     # 5. Download
     for asset in unique_assets.values():
